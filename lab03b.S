@@ -27,4 +27,4 @@ done_b:
 
 	.section .data
 	.align 3
-UIN:	.quad 27                 // <-- replace 27 with YOUR UIN digit sum
+UIN:	.quad 33                
