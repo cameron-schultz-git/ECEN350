@@ -1,0 +1,4 @@
+Starting program: /home/c3p0/ECEN_350_Labs/ECEN350_Labs/Lab02/part3/Lab02-3
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/aarch64-linux-gnu/libthread_db.so.1".
+myvalue @ 0x5555570090 holds 354
