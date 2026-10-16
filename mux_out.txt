@@ -1,0 +1,6 @@
+PASSED: all 131072 input combinations produced the correct output.
+mux_test.v:55: $finish called at 655360000 (1ps)
+
+real	0m4.048s
+user	0m2.995s
+sys	0m0.790s

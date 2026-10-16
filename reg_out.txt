@@ -1,0 +1,2 @@
+PASSED: all register file checks were correct.
+reg_test.v:121: $finish called at 1436000 (1ps)
