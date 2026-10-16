@@ -1,0 +1,9 @@
+VCD info: dumpfile ALUTest.vcd opened for output.
+ALU AND: 106 passed (Zero=1: 4, Zero=0: 102)
+ALU OR: 106 passed (Zero=1: 2, Zero=0: 104)
+ALU ADD: 109 passed (Zero=1: 4, Zero=0: 105)
+ALU SUB: 106 passed (Zero=1: 3, Zero=0: 103)
+ALU PassB: 106 passed (Zero=1: 3, Zero=0: 103)
+ALU: 533 tests, 533 passed, 0 failed
+ALL TESTS PASSED
+ALUTest.v:147: $finish called at 1066000 (1ps)

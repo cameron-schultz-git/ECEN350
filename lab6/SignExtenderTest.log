@@ -1,0 +1,8 @@
+VCD info: dumpfile SignExtenderTest.vcd opened for output.
+SignExtender: I-Type  104 passed
+SignExtender: D-Type  105 passed
+SignExtender: CB-Type 105 passed
+SignExtender: B-Type  104 passed
+SignExtender: 418 tests, 418 passed, 0 failed
+ALL TESTS PASSED
+SignExtenderTest.v:115: $finish called at 836000 (1ps)

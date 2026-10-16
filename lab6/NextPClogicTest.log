@@ -1,0 +1,12 @@
+VCD info: dumpfile NextPClogicTest.vcd opened for output.
+NextPC: Branch=0 Uncondbranch=0 ALUZero=0  sel=0  11 passed
+NextPC: Branch=0 Uncondbranch=0 ALUZero=1  sel=0  10 passed
+NextPC: Branch=0 Uncondbranch=1 ALUZero=0  sel=1  13 passed
+NextPC: Branch=0 Uncondbranch=1 ALUZero=1  sel=1  10 passed
+NextPC: Branch=1 Uncondbranch=0 ALUZero=0  sel=0  11 passed
+NextPC: Branch=1 Uncondbranch=0 ALUZero=1  sel=1  11 passed
+NextPC: Branch=1 Uncondbranch=1 ALUZero=0  sel=1  10 passed
+NextPC: Branch=1 Uncondbranch=1 ALUZero=1  sel=1  10 passed
+NextPC: 86 tests, 86 passed, 0 failed
+ALL TESTS PASSED
+NextPClogicTest.v:106: $finish called at 172000 (1ps)
