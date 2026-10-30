@@ -1,0 +1,441 @@
+# Lab 7 explainer
+
+This covers everything new in Lab 7: what MOVZ is, every line of code that changed, how Test Program 2 runs through the hardware, and a step-by-step guide for the three TA demos.
+
+The prelab code (control unit, its testbench, the top level) is explained in [prelab-explainer.md](prelab-explainer.md). This file only repeats what you need for the demos. The short answers for Canvas are in [lab-7-aws.md](lab-7-aws.md).
+
+The prelab files are left as they were turned in. Every file Q3 changes has a new copy with `_q3` added to the name:
+
+| Prelab file (Q1, Q2) | Q3 copy | What changed in the copy |
+| --- | --- | --- |
+| [SignExtender.v](SignExtender.v) | [SignExtender_q3.v](SignExtender_q3.v) | SignOp is now 3 bits; new MOVZ mode |
+| [SingleCycleControl.v](SingleCycleControl.v) | [SingleCycleControl_q3.v](SingleCycleControl_q3.v) | SignOp is now 3 bits; new MOVZ arm |
+| [SingleCycleProc.v](SingleCycleProc.v) | [SingleCycleProc_q3.v](SingleCycleProc_q3.v) | SignOp wire widened to 3 bits |
+| [InstructionMemory.v](InstructionMemory.v) | [InstructionMemory_q3.v](InstructionMemory_q3.v) | Test Program 2 at 0x34–0x54 |
+| [SingleCycleProcTest.v](SingleCycleProcTest.v) | [SingleCycleProcTest_q3.v](SingleCycleProcTest_q3.v) | Runs Program 2 after Program 1; writes `singlecycle_q3.vcd` |
+| [SingleCycleControlTest.v](SingleCycleControlTest.v) | [SingleCycleControlTest_q3.v](SingleCycleControlTest_q3.v) | Tests MOVZ; 3-bit SignOp; writes `SingleCycleControlTest_q3.vcd` |
+| ALU.v, RegisterFile.v, NextPClogic.v, DataMemory.v | (none) | Not changed; both builds use them |
+
+The module names inside the `_q3` files are the same as in the prelab files (`SC_Control`, `SignExtender`, ...). You pick a version by which files you give `iverilog`. Never compile a prelab file and its `_q3` copy together, or Icarus reports the module as defined twice.
+
+Read Part 1 first, then use Part 2 as your demo script. Parts 3–6 are the detail behind it.
+
+---
+
+## Part 1 — The big picture
+
+### 1.1 What the lab asks for
+
+1. **Q1:** show the control unit passes its testbench, and explain what happens with a bad opcode.
+2. **Q2:** show the full processor runs Test Program 1 correctly.
+3. **Q3:** add a new instruction (MOVZ), write a program that uses it, and show both programs pass.
+
+Q1 and Q2 needed no code changes, because the prelab already passed. Q3 is the real work.
+
+### 1.2 What MOVZ does
+
+`MOVZ Xd, #imm16, LSL #shift` means "**mov**e a 16-bit number into Xd, shifted left by 0, 16, 32 or 48, and **z**ero every other bit".
+
+```
+MOVZ X9, 0x1234, LSL 48   →   X9 = 0x1234_0000_0000_0000
+MOVZ X9, 0x1234, LSL 16   →   X9 = 0x0000_0000_1234_0000
+```
+
+Think of the 64-bit register as four 16-bit slots. MOVZ fills one slot and clears the other three.
+
+ARM has no instruction that loads a full 64-bit constant (an instruction is only 32 bits). Real code uses MOVZ for the first slot and **MOVK** ("keep") for the rest. MOVK changes one slot and leaves the others alone. We only have MOVZ, so we use ORR to combine the slots (see 1.4).
+
+### 1.3 The MOVZ instruction format (IM format)
+
+```
+ 31        23 22 21 20                5 4     0
++------------+-----+-------------------+-------+
+| 110100101  | hw  |    MOV_immediate  |  Rd   |
++------------+-----+-------------------+-------+
+   9 bits     2 bits      16 bits        5 bits
+```
+
+- **hw** ("halfword") picks the slot: 00 → LSL 0, 01 → LSL 16, 10 → LSL 32, 11 → LSL 48. The shift is always `16 × hw`.
+- The control unit sees bits 31:21 as the opcode, which is `110100101` followed by the two hw bits. That is why the opcode pattern is `110100101??`: **one instruction, 4 opcodes**, just like CBZ has 8.
+
+### 1.4 Why ORR is needed to build the constant
+
+The target is `0x1234_5678_9abc_def0`. If we did four MOVZs into X9, each one would wipe out the last, and X9 would end as `0x0000_0000_0000_def0`. So:
+
+1. MOVZ the top slot straight into X9.
+2. For each other slot, MOVZ it into a scratch register (X10), then `ORR X9, X9, X10`.
+
+ORR works here because the slots never overlap: each MOVZ has zeros everywhere except its own 16 bits, so OR just "pastes" them together.
+
+### 1.5 Where to do the shift — the key design decision
+
+The datapath has to make the value `imm16 << (16 × hw)` and get it into Rd. Look at what's already there:
+
+- The **sign extender** already pulls immediate fields out of the instruction and shifts them (CB and B shift left 2).
+- The **ALU** has a **PassB** operation that outputs input B unchanged (CBZ uses it).
+- The **ALUSrc mux** already sends the immediate to ALU input B.
+- The **MemtoReg mux** already sends the ALU result to the register file.
+
+So if the sign extender produces the shifted value, the rest of the path already exists: **sign extender → ALUSrc mux → ALU (PassB) → MemtoReg mux → Rd.** No new wires or muxes are needed.
+
+The one catch: SignOp is 2 bits, and all 4 codes (I, D, CB, B) are used. So SignOp grows to 3 bits, and MOVZ gets `100`.
+
+**The other option** (worth knowing if the TA asks): leave SignOp alone and add a "shift B by 16 × hw" operation to the ALU. That needs a new ALUOp code, and the hw bits must be routed to the ALU. That means a new port on the ALU, which is more wiring. Both designs work.
+
+---
+
+## Part 2 — Demo walkthrough guide
+
+Each Canvas question has a demo with two parts: (a) walk the TA through the code, (b) show the test in GTKWave. Below is a script for each. The **bold** lines are what to say.
+
+### Before the demo
+
+Run everything once so the VCD files are fresh (from `~/code/ECEN350_Labs-main/Lab07`):
+
+```bash
+# Demo 1 and 2: the prelab files
+iverilog -Wall -o SingleCycleControlTest.out SingleCycleControl.v SingleCycleControlTest.v && vvp SingleCycleControlTest.out
+
+iverilog -o SingleCycleProcTest.out SingleCycleProc.v SingleCycleControl.v RegisterFile.v ALU.v \
+    SignExtender.v NextPClogic.v InstructionMemory.v DataMemory.v SingleCycleProcTest.v && vvp SingleCycleProcTest.out
+
+# Demo 3: the _q3 files
+iverilog -Wall -o SingleCycleControlTest_q3.out SingleCycleControl_q3.v SingleCycleControlTest_q3.v && vvp SingleCycleControlTest_q3.out
+
+iverilog -o SingleCycleProcTest_q3.out SingleCycleProc_q3.v SingleCycleControl_q3.v RegisterFile.v ALU.v \
+    SignExtender_q3.v NextPClogic.v InstructionMemory_q3.v DataMemory.v SingleCycleProcTest_q3.v && vvp SingleCycleProcTest_q3.out
+```
+
+Expected:
+
+| Run | Result | VCD |
+| --- | --- | --- |
+| Prelab control | `65 tests, 65 passed, 0 failed` | `SingleCycleControlTest.vcd` |
+| Prelab processor | `All tests passed` (1 test) | `singlecycle.vcd` |
+| Q3 control | `69 tests, 69 passed, 0 failed` | `SingleCycleControlTest_q3.vcd` |
+| Q3 processor | `All tests passed` (3 tests) | `singlecycle_q3.vcd` |
+
+> Demos 1 and 2 use the prelab files, which match the output pasted for Q1 and Q2. Demo 3 uses the `_q3` files. If the TA asks to see MOVZ in the control testbench, open `SingleCycleControlTest_q3.vcd`: its MOVZ block is described in Demo 1 below.
+
+**GTKWave basics** (you'll use these in every demo):
+
+- Open: `gtkwave SingleCycleControlTest.vcd &` (the `&` keeps the terminal free).
+- The top-left panel (**SST**) is the module tree. Click a module to list its signals below it.
+- Select signals, then click **Append** (or drag them into the Signals panel).
+- **Zoom Fit** (the magnifier with a box) shows the whole run. Ctrl + mouse wheel zooms.
+- To view a bus in hex: right-click it → **Data Format → Hex**. For opcodes use **Binary**.
+- Click in the waveform to put the marker there. The values column shows every signal at that time.
+- Red lines / `x` = unknown. In this lab that's expected for don't cares (control test) and for registers that were never written.
+
+### Demo 1 — Control unit (Q1)
+
+**Code walkthrough, [SingleCycleControl.v](SingleCycleControl.v):**
+
+1. Point at the `` `define `` lines: **"These are the 11-bit opcodes. A `?` is a don't-care bit, so B matches 32 opcodes and MOVZ matches 4."**
+2. Point at the module ports: **"No clock. The control unit is pure combinational logic: opcode in, 10 control signals out."**
+3. Point at Step 1 (all outputs = 0): **"Every output starts at 0. That's the safe value for an unknown opcode, and because every output is always assigned, no latches get built."**
+4. Point at `casez (opcode)` and one arm, e.g. LDUR: **"Each arm is one row of the truth table. The `x` values are don't cares, which lets synthesis pick whichever value makes the logic smallest."**
+5. Point at `default`: **"Anything that doesn't match keeps the zeros."**
+
+**Code walkthrough, [SingleCycleControlTest.v](SingleCycleControlTest.v):**
+
+1. `setExpected` task: **"I store one truth-table row in the `exp_` registers. An `x` there means don't check that signal."**
+2. `compare1` task: **"I compare with `!==`. With `!=`, an `x` coming out of the design would never be flagged."**
+3. `isSupported` function: **"This is written with bit slices instead of casez, so it doesn't share a bug with the design. I use it to throw away random opcodes that happen to be real instructions."**
+4. The `initial` block: **"Every supported instruction is tested with every value of its don't-care bits (50 opcodes). Then 5 hand-picked bad opcodes, including ones one bit away from a real opcode (CBNZ, LDUR with the last bit flipped), and 10 random bad ones. The bad ones must output all zeros."** (The `_q3` bench adds the 4 MOVZ opcodes, for 54, and swaps the bad MOVZ test for MOVK.)
+
+**GTKWave:**
+
+1. `gtkwave SingleCycleControlTest.vcd &`
+2. Click `SingleCycleControlTest` → `uut`. Append `opcode` (Binary), then `Reg2Loc`, `ALUSrc`, `MemtoReg`, `RegWrite`, `MemRead`, `MemWrite`, `Branch`, `Uncondbranch`, `ALUOp` (Binary), `SignOp` (Binary).
+3. Zoom Fit. Each test is 2 ns wide. Point out:
+   - The start: LDUR, STUR, ADD, SUB, AND, ORR, one at a time.
+   - In the prelab version, MOVZ is one of the bad opcodes near the end and gives all 0s. In `SingleCycleControlTest_q3.vcd` it has its own block of 4 tests just before CBZ: `SignOp = 100`, `ALUOp = 0111`, `RegWrite = 1`.
+   - The long B block (32 tests): `Uncondbranch = 1` the whole time and red `x` on `ALUOp`, `ALUSrc` etc. **"Those x's are the don't cares. They're safe because RegWrite and MemWrite are always a real 0."**
+   - The end (15 bad opcodes): every output flat at 0.
+
+**The garbled-instruction question:** **"It falls to the default, so all signals are 0. No register write, no memory write, no branch, so the PC just goes to PC + 4. It acts like a NOP. A real ARM CPU would raise an undefined-instruction exception, so ours hides the problem. That's how the handout's wrong AND opcode showed up: AND silently did nothing and the program never finished."**
+
+### Demo 2 — Full processor, Program 1 (Q2)
+
+**Code walkthrough, [SingleCycleProc.v](SingleCycleProc.v).** Trace the datapath figure top to bottom:
+
+1. **PC register** (`always @(posedge CLK)`): **"On each rising edge, the PC loads nextpc, or startpc while reset is high."**
+2. **Instruction fields** (`assign rd/rm/rn/opcode`): **"`rn` is the Reg2Loc mux. It picks bits 20:16 (Rm) for R-type, or bits 4:0 (Rt) for STUR and CBZ, which need to read Rt."**
+3. **InstructionMemory → SC_Control**: opcode goes in, control signals come out.
+4. **RegisterFile**: reads Rn and the Reg2Loc output, writes Rd on the *falling* edge if RegWrite.
+5. **SignExtender → ALUSrc mux → ALU**: **"ALU input B is either Read data 2 or the immediate."**
+6. **DataMemory**: address = ALU result, write data = Read data 2.
+7. **MemtoReg mux**: **"What gets written back: the ALU result, or memory data for LDUR."**
+8. **NextPClogic**: **"Branch if (Branch AND Zero) OR Uncondbranch, otherwise PC + 4."**
+
+Mention the prelab fixes if asked: the swapped `control SingleCycleControl` instance, and the `ALUop` typo (a 1-bit wire Verilog made silently).
+
+**Code walkthrough, [SingleCycleProcTest.v](SingleCycleProcTest.v):**
+
+- **"The clock is an `always` block that flips CLK every 60 ns, so one cycle is 120 ns. It also counts cycles for the watchdog."**
+- **"Reset is held high for a couple of clock edges so the PC loads startPC, then dropped."**
+- **"The while loop clocks the processor until the PC reaches 0x30, then `passTest` checks MemtoRegOut. At 0x30 that's the value loaded back from memory, so it shows what the STUR saved."**
+- **"The watchdog stops the run if the program loops forever. The comment says 64K cycles, but it's really 255."**
+
+**GTKWave:**
+
+1. `gtkwave singlecycle.vcd &`
+2. From `SingleCycleProcTest_v`: append `CLK`, `Reset`. From `uut`: `currentpc`, `instruction`, `Branch`, `Uncondbranch`, `zero`, `aluout`, `MemtoRegOut`. All buses in Hex.
+3. Optional, to watch the loop counters: from `uut` → `registers`, expand `registers` and append entries [12] and [13].
+4. Zoom to about 0–8,500 ns (Program 1). Point out:
+   - **0x00–0x10, five LDURs:** MemtoRegOut shows 1, a, 5, 0ffbea7deadbeeff, 0.
+   - **0x1C, CBZ:** `Branch = 1`. While X12 ≠ 0, `zero = 0`, so the next PC is 0x20.
+   - **0x28, B:** `Uncondbranch = 1`, so the next PC jumps back to 0x1C. **"You can see the PC sawtooth 1c→20→24→28 repeating 15 times."**
+   - **The last CBZ:** `zero = 1`, so the PC jumps to 0x2C.
+   - **0x30:** MemtoRegOut = `f`. That's what the test checks.
+
+### Demo 3 — MOVZ and Program 2 (Q3)
+
+Use the `_q3` files for this whole demo. A good opener: **"I kept the prelab files as they were and put the Q3 changes in `_q3` copies, so the old design is still there to compare against."**
+
+**Code walkthrough** (go in this order, since it follows the data):
+
+1. **[SignExtender_q3.v](SignExtender_q3.v)**: the `` `MOVZtype `` case. **"Bits 20:5 are the 16-bit immediate, and bits 22:21 are hw. The inner case puts the immediate into slot hw and fills everything else with zeros. Concatenation does the shift, so no shifter is needed."**
+2. **[SingleCycleControl_q3.v](SingleCycleControl_q3.v)**: the `` `OPCODE_MOVZ `` arm. **"ALUSrc = 1 sends the shifted value to ALU B, PassB sends it straight through, MemtoReg = 0 and RegWrite = 1 write it to Rd. No memory, no branch. Reg2Loc is a don't care because Read data 2 isn't used."** Also: **"SignOp had to grow to 3 bits because all 4 two-bit codes were taken."**
+3. **[SingleCycleProc_q3.v](SingleCycleProc_q3.v)**: **"The only change is the SignOp wire, `[1:0]` to `[2:0]`. The data already flows sign extender → ALU → register file."**
+4. **[InstructionMemory_q3.v](InstructionMemory_q3.v)**: the Program 2 block. **"Four MOVZs, one per slot, combined with ORR because MOVZ clears the other bits. Then STUR to 0x28 and LDUR back into X10."**
+5. **[SingleCycleProcTest_q3.v](SingleCycleProcTest_q3.v)**: **"Program 1 runs first, unchanged, so we know nothing old broke. Then reset with startPC = 0x34, run to 0x4C and check X9, then run to 0x54 and check the loaded value. 0x28 starts out as x in memory, so the second check only passes if the store really happened."**
+
+**GTKWave:**
+
+1. `gtkwave singlecycle_q3.vcd &` (the Q3 run, not `singlecycle.vcd`). Add the Demo 2 signals, plus these from `uut`: `SignOp` (Binary), `extimm`, `ALUSrc`, `ALUOp` (Binary), `RegWrite`, `MemWrite`, `MemRead`. Keep `currentpc`, `instruction`, `aluout`, `MemtoRegOut`. To watch X9 and X10 directly, append `registers` entries [9] and [10] from `registers`.
+2. Zoom to about **8,500–9,600 ns** (Program 2 starts when the PC becomes 0x34 at about 8,583 ns).
+3. Click on each instruction and read the values:
+
+| PC | instruction | SignOp | extimm | aluout | after this cycle |
+| --- | --- | --- | --- | --- | --- |
+| 34 | d2e24689 | 100 | 1234000000000000 | 1234000000000000 | X9 = 1234000000000000 |
+| 38 | d2cacf0a | 100 | 0000567800000000 | 0000567800000000 | X10 = 0000567800000000 |
+| 3c | aa0a0129 | (x) | — | 1234567800000000 | X9 = 1234567800000000 |
+| 40 | d2b3578a | 100 | 000000009abc0000 | 000000009abc0000 | X10 = 000000009abc0000 |
+| 44 | aa0a0129 | (x) | — | 123456789abc0000 | X9 = 123456789abc0000 |
+| 48 | d29bde0a | 100 | 000000000000def0 | 000000000000def0 | X10 = 000000000000def0 |
+| 4c | aa0a0129 | (x) | — | 123456789abcdef0 | X9 = 123456789abcdef0 ✔ check 1 |
+| 50 | f80283e9 | 001 | 0000000000000028 | 0000000000000028 | Memory[0x28] = X9 (`MemWrite = 1`) |
+| 54 | f84283ea | 001 | 0000000000000028 | 0000000000000028 | MemtoRegOut = 123456789abcdef0 ✔ check 2 |
+
+4. **"Watch `extimm`. The 16-bit piece moves up one slot at a time: 1234 at the top, then 5678, 9abc, def0. And `aluout` on the ORRs shows X9 filling in from left to right."**
+
+---
+
+## Part 3 — The code changes, line by line
+
+Each section is one `_q3` file, compared with its prelab version.
+
+### 3.1 SignExtender_q3.v
+
+```verilog
+`define Itype    3'b000
+`define Dtype    3'b001
+`define CBtype   3'b010
+`define Btype    3'b011
+`define MOVZtype 3'b100
+```
+
+The old codes keep their values, just with a 0 in front (`01` → `001`). That keeps every old instruction working.
+
+```verilog
+input      [2:0]  SignOp
+```
+
+The port is now 3 bits. **Every** place that connects to SignOp has to change width too (the control output, the top-level wire, the testbench). If one is missed, Verilog quietly drops or pads the top bit. That would be the same kind of silent bug as the prelab's `ALUop` typo.
+
+```verilog
+`MOVZtype:
+  case (Instruction[22:21])                                 // hw = which 16-bit slot
+    2'b00:   SignExOut = {48'b0, Instruction[20:5]};        // LSL 0
+    2'b01:   SignExOut = {32'b0, Instruction[20:5], 16'b0}; // LSL 16
+    2'b10:   SignExOut = {16'b0, Instruction[20:5], 32'b0}; // LSL 32
+    default: SignExOut = {Instruction[20:5], 48'b0};        // LSL 48
+  endcase
+```
+
+- **A `case` inside a `case`:** the outer case picks the format, and the inner one picks the slot using hw.
+- **`{a, b, c}` is concatenation:** the pieces are glued together, leftmost piece in the highest bits. Putting `16'b0` on the right of the immediate is the same as shifting it left 16. Each line adds up to 64 bits (e.g. 32 + 16 + 16).
+- **The inner `default`** covers hw = 11 and also makes sure every path assigns SignExOut, so no latch is made.
+- `Instruction` here is only bits 25:0 of the real instruction (the top level passes `instruction[25:0]`). Bits 22:21 and 20:5 are in that range, so no port change was needed.
+
+An equivalent one-liner would be `SignExOut = {48'b0, Instruction[20:5]} << {Instruction[22:21], 4'b0};`. `{hw, 4'b0}` is `hw × 16`. The case version is easier to read in a demo and maps directly to 4 mux inputs.
+
+### 3.2 SingleCycleControl_q3.v
+
+```verilog
+output reg [2:0] SignOp,
+```
+
+Widened, and every `SignOp = 2'b..` in every arm is now 3 bits (`3'b001`, `3'bxxx`, ...).
+
+```verilog
+`OPCODE_MOVZ:
+  begin
+     Reg2Loc      = 1'bx;     // Read data 2 is not used
+     ALUSrc       = 1'b1;     // ALU B = the shifted immediate
+     MemtoReg     = 1'b0;     // write the ALU result into Xd
+     RegWrite     = 1'b1;     // yes, write Xd
+     MemRead      = 1'b0;
+     MemWrite     = 1'b0;
+     Branch       = 1'b0;
+     Uncondbranch = 1'b0;
+     ALUOp        = 4'b0111;  // PassB
+     SignOp       = 3'b100;   // MOVZ
+  end
+```
+
+Work it out the same way as the prelab rows. Ask what MOVZ needs:
+
+- The value comes from the immediate, so **ALUSrc = 1**.
+- The ALU must not change it, so **PassB**.
+- It is written to a register, so **MemtoReg = 0** (take the ALU result) and **RegWrite = 1**.
+- No memory and no branch, so **0s**. These are never X, for the same safety reasons as the prelab.
+- Read data 2 is never used, so **Reg2Loc = X**.
+
+`` `OPCODE_MOVZ `` was already defined as `11'b110100101??` in the prelab, but there was no arm for it, so it fell to the default. Adding the arm is all that "turns it on".
+
+**Read register 1 during MOVZ:** the register file always reads Rn = bits 9:5. For MOVZ those bits are part of the immediate, so it reads some random register. That's harmless: PassB ignores ALU input A.
+
+### 3.3 SingleCycleProc_q3.v
+
+```verilog
+wire [2:0] SignOp;       // Lab 7: widened from 2 to 3 bits for MOVZ
+```
+
+That is the only functional change. The SignExtender and SC_Control instances connect `.SignOp(SignOp)` by name, so they pick up the new width automatically.
+
+### 3.4 InstructionMemory_q3.v
+
+```verilog
+63'h034: Data = 32'hD2E24689;   // MOVZ X9, 0x1234, LSL 48
+...
+63'h054: Data = 32'hF84283EA;   // LDUR X10, [XZR, 0x28]
+```
+
+Each `case` label is an address, and the value is the instruction stored there. Addresses go up by 4 because every instruction is 4 bytes. Program 2 starts at 0x34, the first free address after Program 1.
+
+**How to encode an instruction by hand** (do this for any one if the TA asks):
+
+| Instruction | Fields | Hex |
+| --- | --- | --- |
+| `MOVZ X9, 0x1234, LSL 48` | `110100101` `11` `0001001000110100` `01001` | `D2E24689` |
+| `MOVZ X10, 0x5678, LSL 32` | `110100101` `10` `0101011001111000` `01010` | `D2CACF0A` |
+| `MOVZ X10, 0x9abc, LSL 16` | `110100101` `01` `1001101010111100` `01010` | `D2B3578A` |
+| `MOVZ X10, 0xdef0, LSL 0` | `110100101` `00` `1101111011110000` `01010` | `D29BDE0A` |
+| `ORR X9, X9, X10` | opcode `10101010000`, Rm `01010`, shamt `000000`, Rn `01001`, Rd `01001` | `AA0A0129` |
+| `STUR X9, [XZR, 0x28]` | opcode `11111000000`, imm9 `000101000`, op `00`, Rn `11111`, Rt `01001` | `F80283E9` |
+| `LDUR X10, [XZR, 0x28]` | opcode `11111000010`, imm9 `000101000`, op `00`, Rn `11111`, Rt `01010` | `F84283EA` |
+
+Write the fields out in a row, regroup them into 4-bit nibbles from the left, and convert each nibble to hex. For example:
+
+```
+110100101 11 0001001000110100 01001
+= 1101 0010 1110 0010 0100 0110 1000 1001
+=   D    2    E    2    4    6    8    9
+```
+
+### 3.5 SingleCycleProcTest_q3.v
+
+```verilog
+#1
+  Reset = 1; startPC = 64'h34;
+@(posedge CLK);
+@(negedge CLK);
+@(posedge CLK);
+Reset = 0;
+```
+
+This copies how Program 1 starts. Reset is held across two rising edges, so the PC is sure to load 0x34.
+
+> **Why it's OK that the instruction at 0x34 runs during reset:** while Reset is high, the PC sits at 0x34 and the MOVZ there executes every cycle. It writes the same value to X9 each time, so running it 2 or 3 times gives the same result. That's also why PC 0x34 and 0x38 don't appear in the printed `CurrentPC:` trace. The loop only prints after it starts clocking.
+
+```verilog
+while (currentPC < 64'h4c) begin @(posedge CLK); @(negedge CLK); ... end
+passTest(MemtoRegOut, 64'h123456789abcdef0, "Program 2: X9 built by MOVZ", passed);
+```
+
+The loop clocks the processor until the PC reaches 0x4C. It checks at the negative edge, mid-cycle, when the combinational logic has settled. At that point the last ORR is the current instruction, so MemtoRegOut is its ALU result: the finished X9. The testbench can only see the processor's ports (`currentpc`, `MemtoRegOut`), not the registers directly. That's why it checks values as they pass through MemtoRegOut.
+
+The second loop runs to 0x54 and checks the LDUR's MemtoRegOut, which is the value read from memory.
+
+```verilog
+allPassed(passed, 3);
+```
+
+There are now 3 `passTest` calls (1 from Program 1, 2 from Program 2).
+
+### 3.6 SingleCycleControlTest_q3.v
+
+- `wire [2:0] SignOp`, `reg [2:0] exp_SignOp`, the `setExpected` input, and the `3'bxxx` don't-care check are all widened.
+- **New MOVZ block:** loops `dc` over 0–3 and sets `opcode = {9'b110100101, dc[1:0]}`, covering all 4 hw values.
+- **`isSupported`** gains `op[10:2] == 9'b110100101`, so the random test won't pick a MOVZ and expect zeros.
+- **The hand-picked "BAD MOVZ" test became "BAD MOVK"** (`11110010100`). MOVZ isn't bad anymore. MOVK differs from it in one opcode bit, which makes it a good near-miss test.
+- 50 + 4 = 54 supported tests, + 5 hand-picked + 10 random = **69 tests**.
+
+---
+
+## Part 4 — Following MOVZ through the processor
+
+### MOVZ X9, 0x1234, LSL 48 at PC 0x34 — `D2E24689`
+
+```
+110100101 | 11 | 0001 0010 0011 0100 | 01001
+opcode      hw   imm16 = 0x1234        Rd = 9
+```
+
+1. `opcode` = Instruction[31:21] = `11010010111` matches `110100101??` → control: ALUSrc=1, ALUOp=PassB, RegWrite=1, MemtoReg=0, SignOp=100.
+2. **Sign extender:** hw = `11`, so `{0x1234, 48'b0}` = `0x1234000000000000`.
+3. **ALUSrc mux:** ALU B = extimm. **ALU:** PassB, so aluout = `0x1234000000000000`.
+4. **MemtoReg mux:** picks aluout. On the falling edge, X9 = `0x1234000000000000`.
+5. **NextPC:** Branch = Uncondbranch = 0, so PC = 0x38.
+
+### ORR X9, X9, X10 at PC 0x3C — `AA0A0129`
+
+1. R-type: Reg2Loc=0, so Read register 2 = Rm = X10. ALUSrc=0, ALUOp=OR.
+2. regoutA = X9 = `0x1234000000000000`, regoutB = X10 = `0x0000567800000000`.
+3. aluout = `0x1234567800000000` → written to X9.
+
+### STUR X9, [XZR, 0x28] then LDUR X10, [XZR, 0x28]
+
+1. STUR: Reg2Loc=1, so Read register 2 = Rt = X9, and regoutB = `0x123456789abcdef0`. ALU: 0 + 0x28 = 0x28. On the rising edge, data memory writes the 8 bytes at 0x28–0x2F (big-endian: 0x12 goes in 0x28).
+2. LDUR: same address. MemRead=1 and MemtoReg=1, so MemtoRegOut = memory[0x28] = `0x123456789abcdef0` → written to X10.
+
+**Why 0x28 is a good address:** Program 1 uses 0x00–0x27 (five 8-byte values), so 0x28 is the next free 8-byte slot, and it starts as `x`. If the store failed, the load would return `x`, never the right answer by accident.
+
+---
+
+## Part 5 — Questions the TA might ask
+
+| Question | Answer |
+| --- | --- |
+| Why did SignOp need a third bit? | All four 2-bit codes were already used by I, D, CB and B. |
+| Why PassB and not ADD for MOVZ? | ADD would add ALU input A, which is a random register (bits 9:5 are part of the immediate). PassB ignores A. I tested this: with ADD, the result is `x`. |
+| Why not just MOVZ four times into X9? | MOVZ zeros the other 48 bits, so each one would erase the previous. ORR combines them since the slots don't overlap. (A real ARM program would use MOVK.) |
+| Why is Reg2Loc a don't care for MOVZ? | Read data 2 is not used (ALUSrc = 1 picks the immediate, and nothing is stored). |
+| Did you have to change the ALU or add a mux? | No. Sign extender → ALUSrc mux → ALU PassB → MemtoReg mux → register file already exists. Only SignOp's width changed in the top level. |
+| How do you know Program 1 still works? | The testbench runs Program 1 first, unchanged, and it still passes. |
+| How does the test know the store worked? | Address 0x28 starts as `x`. The LDUR only returns the right value if STUR wrote it. |
+| What does a garbled opcode do? | Falls to the default: all control signals 0, so it acts as a NOP (PC + 4, nothing written). |
+| Why is the register file written on the falling edge? | So the value is written in the middle of the cycle, after the result has settled, and before the next instruction reads it in the next cycle. |
+| What's the critical path of a single-cycle CPU? | LDUR: instruction memory → register file → ALU → data memory → MemtoReg mux → register file. The clock must be slow enough for the slowest instruction. That's the main drawback of single cycle. |
+| What happens if you hit an address with no instruction? | InstructionMemory returns `x`. The opcode matches nothing, so the control outputs 0s (NOP). |
+| How many cycles does the whole test take? | About 80 cycles (9,600 ns ÷ 120 ns), under the 255-cycle watchdog. |
+
+---
+
+## Quick syntax reference (new in this lab)
+
+See the end of [prelab-explainer.md](prelab-explainer.md) for the full table. New or more important here:
+
+| Syntax | Meaning |
+| --- | --- |
+| `{16'b0, x[20:5], 32'b0}` | concatenation; zeros on the right = shift left |
+| `{N{bit}}` | replication: `bit` repeated N times (used for sign extension) |
+| `case` inside a `case` | nested choice; each inner case needs its own `default` / `endcase` |
+| `[2:0]` vs `[1:0]` | 3-bit vs 2-bit bus. Mismatched widths are silently padded or cut, so change them everywhere |
+| `{9'b110100101, dc[1:0]}` | builds an opcode from a fixed part and a loop counter |
+| `63'h034:` in InstructionMemory | a case label: "when Address is 0x34" |
+| `passTest(actual, expected, name, passed)` | given task: prints passed/failed and counts passes |
