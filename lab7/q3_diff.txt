@@ -1,0 +1,96 @@
+* Assembly code for test:
+	 *
+	 * 34: MOVZ X9, 0x1234, LSL 48   //X9  = 0x1234000000000000
+	 * 38: MOVZ X10, 0x5678, LSL 32  //X10 = 0x0000567800000000
+	 * 3C: ORR X9, X9, X10           //X9  = 0x1234567800000000
+	 * 40: MOVZ X10, 0x9abc, LSL 16  //X10 = 0x000000009abc0000
+	 * 44: ORR X9, X9, X10           //X9  = 0x123456789abc0000
+	 * 48: MOVZ X10, 0xdef0, LSL 0   //X10 = 0x000000000000def0
+	 * 4C: ORR X9, X9, X10           //X9  = 0x123456789abcdef0
+	 * 50: STUR X9, [XZR, 0x28]      //Memory[0x28] = X9
+	 * 54: LDUR X10, [XZR, 0x28]     //X10 = Memory[0x28]
+	 */
+
+	63'h034: Data = 32'hD2E24689;
+	63'h038: Data = 32'hD2CACF0A;
+	63'h03c: Data = 32'hAA0A0129;
+	63'h040: Data = 32'hD2B3578A;
+	63'h044: Data = 32'hAA0A0129;
+	63'h048: Data = 32'hD29BDE0A;
+	63'h04c: Data = 32'hAA0A0129;
+	63'h050: Data = 32'hF80283E9;
+	63'h054: Data = 32'hF84283EA;
+
+CONTROL Changes:
+
+`define OPCODE_MOVZ   11'b110100101??
+
+OPCODE_MOVZ:
+            begin
+               Reg2Loc      = 1'bx;     // don't care: Read data 2 is not used
+               ALUSrc       = 1'b1;     // ALU B = the shifted immediate
+               MemtoReg     = 1'b0;     // write the ALU result into Xd
+               RegWrite     = 1'b1;     // yes, we write Xd
+               MemRead      = 1'b0;     // no memory access
+               MemWrite     = 1'b0;     // no memory access
+               Branch       = 1'b0;     // not a branch
+               Uncondbranch = 1'b0;     // not a branch
+               ALUOp        = 4'b0111;  // PassB: ALU output = the shifted immediate
+               SignOp       = 3'b100;   // MOVZ: Instruction[20:5] << (16 * Instruction[22:21])
+            end
+            
+CONTROL TEST Changes:
+            
+  if (op[10:2] == 9'b110100101)     isSupported = 1;   // MOVZ (last 2 bits are don't care)
+  
+  // ---------------- MOVZ (2 don't-care bits -> 4 opcodes) ----
+        // Lab 7. The 2 don't-care bits are hw (the shift amount).
+        setExpected(1'bx, 1'b1, 1'b0, 1'b1, 1'b0, 1'b0, 1'b0, 1'b0, 4'b0111, 3'b100);
+        for (dc = 0; dc < 4; dc = dc + 1)
+          begin
+             opcode = {9'b110100101, dc[1:0]};    // fixed 9 bits + 2 don't-care bits
+             checkOutputs("MOVZ");
+          end
+          
+SINGLE CYCLE PROC Changes:
+
+   wire [2:0] 			     SignOp;
+   
+SINGLE CYCLE PROC TEST Changes:
+
+	 #1
+        Reset = 1; startPC = 64'h34;
+      @(posedge CLK);
+      @(negedge CLK);
+      @(posedge CLK);
+      Reset = 0;
+
+      // Run up to the last ORR (0x4C). Its ALU result is the finished X9.
+      while (currentPC < 64'h4c)
+        begin
+	   @(posedge CLK);
+	   @(negedge CLK);
+           $display("CurrentPC:%h",currentPC);
+        end
+      passTest(MemtoRegOut, 64'h123456789abcdef0, "Program 2: X9 built by MOVZ", passed);
+
+      // Run up to the LDUR (0x54). MemtoRegOut is the value loaded back
+      // from address 0x28, so it only matches if the STUR at 0x50 worked.
+      while (currentPC < 64'h54)
+        begin
+	   @(posedge CLK);
+	   @(negedge CLK);
+           $display("CurrentPC:%h",currentPC);
+        end
+      passTest(MemtoRegOut, 64'h123456789abcdef0, "Program 2: X10 loaded from 0x28", passed);
+
+SIGN EXTENDER Changes: 
+
+     `MOVZtype:
+           case (Instruction[22:21])                                               // hw = which 16-bit slot
+             2'b00:   SignExOut = {48'b0, Instruction[20:5]};                      // LSL 0
+             2'b01:   SignExOut = {32'b0, Instruction[20:5], 16'b0};               // LSL 16
+             2'b10:   SignExOut = {16'b0, Instruction[20:5], 32'b0};               // LSL 32
+             default: SignExOut = {Instruction[20:5], 48'b0};                      // LSL 48
+           endcase
+ 

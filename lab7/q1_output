@@ -1,0 +1,4 @@
+VCD info: dumpfile SingleCycleControlTest.vcd opened for output.
+SC_Control: 65 tests, 65 passed, 0 failed
+ALL TESTS PASSED
+SingleCycleControlTest.v:342: $finish called at 130000 (1ps)
