@@ -1,0 +1,1 @@
+$ bin/champsim --warmup-instructions 20000000 --simulation-instructions 20000000 ~/home/c3p0/ECEN_350_Labs/ECEN350_Labs/Lab08/benchmark.trace.xz
